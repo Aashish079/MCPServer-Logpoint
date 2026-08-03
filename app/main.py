@@ -1,11 +1,11 @@
 import json
-from fastapi import FastAPI, Depends, HTTPException, Header, Body, Form, UploadFile, File, Query
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Depends, HTTPException, Body, Form, UploadFile, File, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jwt import PyJWTError, decode
 from typing import Optional
 
-from .config import JWT_ALGORITHM, JWT_SECRET, VALID_USERS
+from .config import settings, VALID_USERS
 from .data import (
     ALLOWED_DATA,
     SEARCH_SESSIONS,
@@ -31,6 +31,14 @@ from .data import (
 app = FastAPI(title="Logpoint MCP Server")
 security = HTTPBearer(auto_error=False)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 def validate_form_credentials(username: str = Form(...), secret_key: str = Form(...)):
     if VALID_USERS.get(username) != secret_key:
@@ -51,10 +59,16 @@ def validate_jwt(credentials: Optional[HTTPAuthorizationCredentials] = Depends(s
         raise HTTPException(status_code=401, detail="Missing bearer token")
     token = credentials.credentials
     try:
-        payload = decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
     except PyJWTError as exc:
         raise HTTPException(status_code=401, detail=f"Invalid token: {exc}")
     return payload
+
+
+def validate_optional_jwt(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        return None
+    return validate_jwt(credentials)
 
 
 @app.post("/getalloweddata")
@@ -81,6 +95,42 @@ async def get_search_logs(requestData: str = Form(...), username: str = Form(...
         return create_search_results(search_id)
 
     return create_search_session(payload)
+
+
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "ok",
+        "environment": settings.environment,
+        "version": "1.0.0",
+    }
+
+
+@app.post("/integration/n8n/alert")
+async def n8n_alert_integration(payload: dict = Body(...)):
+    return {
+        "status": "received",
+        "integration": "n8n",
+        "payload": payload,
+    }
+
+
+@app.post("/integration/claude/incident-summary")
+async def claude_incident_summary(payload: dict = Body(...), auth: Optional[HTTPAuthorizationCredentials] = Depends(validate_optional_jwt)):
+    incident = payload.get("incident", payload)
+    incident_id = incident.get("incident_id") or incident.get("_id")
+    name = incident.get("name", "unknown incident")
+    severity = incident.get("risk_level", incident.get("status", "unknown"))
+    summary = (
+        f"Incident {name} ({incident_id}) has severity {severity}. "
+        f"It is currently {incident.get('status', 'unknown status')} and assigned to {incident.get('assigned_to', 'unassigned')}."
+    )
+    return {
+        "status": "ok",
+        "integration": "claude",
+        "summary": summary,
+        "payload": payload,
+    }
 
 
 @app.get("/incidents")
