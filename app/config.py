@@ -1,7 +1,7 @@
 import os
 from typing import Dict, List
 
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -23,3 +23,7 @@ for item in settings.allowed_users:
     if ":" in item:
         username, secret = item.split(":", 1)
         VALID_USERS[username] = secret
+
+
+def check_credentials(username: str, secret_key: str) -> bool:
+    return VALID_USERS.get(username) == secret_key
