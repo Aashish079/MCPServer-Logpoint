@@ -118,6 +118,49 @@ REPO_SEARCH = {
 }
 
 
+def get_incidents_in_range(ts_from: float, ts_to: float, filters: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+    filters = filters or {}
+    rows = [
+        incident
+        for incident in INCIDENTS
+        if ts_from <= incident["detection_timestamp"] <= ts_to
+    ]
+    for field, value in filters.items():
+        rows = [incident for incident in rows if incident.get(field) == value]
+    return rows
+
+
+def find_incident(incident_id: str) -> Dict[str, Any]:
+    for incident in INCIDENTS:
+        if incident["_id"] == incident_id or incident.get("incident_id") == incident_id:
+            return incident
+    raise KeyError(incident_id)
+
+
+def add_incident_comments(states: List[Dict[str, Any]]) -> Dict[str, Any]:
+    for state in states:
+        incident = find_incident(state["_id"])
+        incident.setdefault("comments", [])
+        for comment in state.get("comments", []):
+            incident["comments"].append({"comment": comment})
+    return {"message": "Comments added", "success": True}
+
+
+def assign_incidents(incident_ids: List[str], new_assignee: str) -> Dict[str, Any]:
+    for incident_id in incident_ids:
+        incident = find_incident(incident_id)
+        incident["assigned_to"] = new_assignee
+    return {"message": "Incidents reassigned", "success": True}
+
+
+def set_incident_status(incident_ids: List[str], status: str) -> Dict[str, Any]:
+    verbs = {"resolved": "resolved", "closed": "closed", "unresolved": "reopened"}
+    for incident_id in incident_ids:
+        incident = find_incident(incident_id)
+        incident["status"] = status
+    return {"message": f"Incidents {verbs.get(status, status)}", "success": True}
+
+
 def create_search_session(request_data: Dict[str, Any]) -> Dict[str, Any]:
     search_id = str(uuid.uuid4())
     session = {

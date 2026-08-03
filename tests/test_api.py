@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
-from app.config import JWT_SECRET
+from app.config import settings
 import jwt
 import datetime
 
@@ -16,7 +16,7 @@ def make_token():
         "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=1),
         "iss": "self-signed",
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 
 
 def test_get_allowed_data_user_preference():

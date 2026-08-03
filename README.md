@@ -14,6 +14,9 @@ This repository implements production-ready MCP server endpoints for Logpoint SI
 - HTTP and email notification settings endpoints
 - n8n webhook integration endpoint
 - Claude incident summary integration endpoint
+- MCP server (`app/mcp_server.py`) exposing the incident/search actions, threat intel
+  lookups, MITRE ATT&CK reference, and Jira/email tools as MCP tools for an LLM
+  triage agent (see [MCP Server](#mcp-server) below)
 
 ## Run locally
 
@@ -75,6 +78,46 @@ curl -X POST http://localhost:8000/integration/claude/incident-summary \
   -H "Content-Type: application/json" \
   -d '{"incident_id":"abc123","name":"Suspicious login","risk_level":"high","status":"unresolved","assigned_to":"admin"}'
 ```
+
+## MCP Server
+
+`app/mcp_server.py` exposes the Guardsix triage actions as MCP tools, so an LLM
+(Claude/OpenAI via n8n's AI Agent + MCP Client Tool node, or Claude Desktop) can
+call them directly instead of n8n hardcoding the request sequence.
+
+Tools exposed:
+
+| Tool | Purpose |
+|---|---|
+| `get_incidents` | Fetch incidents in a time range |
+| `get_incident_data` | Fetch correlated log rows for one incident |
+| `search_logs` / `fetch_search_results` | Start/poll a Guardsix search |
+| `add_incident_comment` | Note an analyst decision (false-positive path) |
+| `assign_incident` | Assign an incident to a user/group |
+| `resolve_incident` / `close_incident` / `reopen_incident` | Incident lifecycle actions |
+| `get_users` | List incident users/groups for assignment |
+| `lookup_virustotal_tool` / `lookup_abuseipdb_tool` / `lookup_misp_tool` | Threat intel reputation (mocked) |
+| `mitre_attack_lookup` | Ground technique IDs against a local ATT&CK reference |
+| `create_jira_ticket_tool` | Open a Jira case for a confirmed true positive (mocked) |
+| `send_email_tool` | Notify the SOC team (mocked) |
+
+Run it:
+
+```bash
+# stdio - Claude Desktop / MCP CLI clients
+python -m app.mcp_server
+
+# SSE - n8n's MCP Client Tool node
+python -m app.mcp_server --transport sse
+
+# Streamable HTTP
+python -m app.mcp_server --transport streamable-http
+```
+
+Incident/search tools require the same `username`/`secret_key` credentials as
+the REST API (see example credentials above). Threat intel, Jira, and email
+tools are mocked (`app/integrations.py`) — swap those function bodies for real
+VirusTotal/AbuseIPDB/MISP/Jira/SMTP calls once API keys are available.
 
 ## JWT Token Generator
 

@@ -26,6 +26,10 @@ from .data import (
     read_http_notification,
     record_email_notification,
     read_email_notification,
+    get_incidents_in_range,
+    add_incident_comments,
+    assign_incidents,
+    set_incident_status,
 )
 
 app = FastAPI(title="Logpoint MCP Server")
@@ -136,7 +140,9 @@ async def claude_incident_summary(payload: dict = Body(...), auth: Optional[HTTP
 @app.get("/incidents")
 async def get_incidents(requestData: dict = Body(...)):
     validate_json_credentials(requestData)
-    return {"version": requestData["requestData"]["version"], "incidents": INCIDENTS}
+    data = requestData["requestData"]
+    incidents = get_incidents_in_range(data["ts_from"], data["ts_to"])
+    return {"version": data["version"], "incidents": incidents}
 
 
 @app.get("/get_data_from_incident")
@@ -165,31 +171,32 @@ async def incident_states(requestData: dict = Body(...)):
 @app.post("/add_incident_comment")
 async def add_incident_comment(payload: dict = Body(...)):
     validate_json_credentials(payload)
-    return {"message": "Comments added", "success": True}
+    return add_incident_comments(payload["requestData"]["states"])
 
 
 @app.post("/assign_incident")
 async def assign_incident(payload: dict = Body(...)):
     validate_json_credentials(payload)
-    return {"message": "Incidents reassigned", "success": True}
+    data = payload["requestData"]
+    return assign_incidents(data["incident_ids"], data["new_assignee"])
 
 
 @app.post("/resolve_incident")
 async def resolve_incident(payload: dict = Body(...)):
     validate_json_credentials(payload)
-    return {"message": "Incidents resolved", "success": True}
+    return set_incident_status(payload["requestData"]["incident_ids"], "resolved")
 
 
 @app.post("/close_incident")
 async def close_incident(payload: dict = Body(...)):
     validate_json_credentials(payload)
-    return {"message": "Incidents closed", "success": True}
+    return set_incident_status(payload["requestData"]["incident_ids"], "closed")
 
 
 @app.post("/reopen_incident")
 async def reopen_incident(payload: dict = Body(...)):
     validate_json_credentials(payload)
-    return {"message": "Incidents reopened", "success": True}
+    return set_incident_status(payload["requestData"]["incident_ids"], "unresolved")
 
 
 @app.get("/get_users")
