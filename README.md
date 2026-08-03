@@ -1,5 +1,7 @@
 # Logpoint MCP Server
 
+![Logpoint Logo](assets/LogpointLogo.jpg)
+
 This repository implements a mock MCP server for Logpoint SIEM APIs based on the provided Logpoint API documentation.
 
 ## Features
@@ -35,6 +37,3 @@ This repository implements a mock MCP server for Logpoint SIEM APIs based on the
 python token_generator.py --sub admin --scope "user:read alertrules:write logsources:read alertrules:read search:read search:write" --secret a1b2c3d4e5f6g7h8i9j0k1
 ```
 
-## Notes
-
-This server is intended as a mock implementation for testing and development.
