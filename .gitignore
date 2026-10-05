@@ -10,3 +10,8 @@ __pycache__/
 .idea/
 LogPointAPIDocumentation.pdf
 Automation(Alert Triaging) with n8n as SOAR connected with SIEM via MCP .pdf
+
+!.env.example
+.pytest_cache/
+*.egg-info/
+.mcp.json

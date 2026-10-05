@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "logpoint-mcp"
+dynamic = ["version"]
+description = "MCP server that gives an LLM triage agent access to a Logpoint SIEM"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.24,<2",
+    "httpx>=0.27,<1",
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.7,<3",
+    "PyJWT>=2.8,<3",
+    "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[project.scripts]
+logpoint-mcp = "logpoint_mcp.__main__:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "logpoint_mcp.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["logpoint_mcp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit", "tests/live"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore:Using `httpx` with `starlette.testclient`"]
+markers = ["live: read-only tests against a real Logpoint (set LOGPOINT_LIVE_TESTS=1)"]
