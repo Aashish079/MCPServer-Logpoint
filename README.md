@@ -6,6 +6,15 @@ An [MCP](https://modelcontextprotocol.io) server that lets an LLM triage agent (
 
 It talks to the real Logpoint Incident, Search and Alert Rule APIs. Nothing is mocked.
 
+## Architecture
+
+![Architecture diagram](assets/ArchitectureDiagram.png)
+
+1. **Clients.** Claude connects over stdio. n8n and other remote agents use streamable HTTP with a bearer token.
+2. **MCP server.** Tools are grouped as read, enrich and write. Every call passes through guardrails, then reaches the Logpoint clients or the integrations.
+3. **Logpoint SIEM.** The server uses the Incident, Search and Alert Rule APIs.
+4. **Optional services.** VirusTotal, AbuseIPDB, MISP, MITRE ATT&CK, Jira and SMTP.
+
 ## Tools
 
 | Tool | What it does | Registered when |
