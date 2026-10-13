@@ -203,3 +203,22 @@ def test_defang():
     assert defang("see HTTPS://a.test and [x](http://b.test) javascript:alert(1)") == (
         "see HxxPS://a.test and [x] (hxxp://b.test) javascript[:]alert(1)"
     )
+
+
+async def test_teams_announce_run_goes_to_the_announce_webhook():
+    recorder = Recorder(httpx.Response(202))
+    notifier = TeamsNotifier(TeamsSettings(webhook_url="https://hook.test/cards",
+                                           announce_webhook_url="https://hook.test/announce"),
+                             recorder.client(""))
+    result = await notifier.announce_run(incident_count=3)
+    request = recorder.requests[0]
+    assert request.url.path == "/announce"
+    payload = json.loads(request.content)
+    assert payload["kind"] == "triage_run_started" and payload["incident_count"] == 3
+    assert payload["timestamp"].endswith("+00:00") and "3 incidents follow" in result["text"]
+
+
+async def test_teams_announce_needs_its_own_webhook():
+    notifier = TeamsNotifier(TeamsSettings(webhook_url="https://hook.test/cards"), Recorder(httpx.Response(202)).client(""))
+    with pytest.raises(IntegrationError, match="TEAMS_ANNOUNCE_WEBHOOK_URL"):
+        await notifier.announce_run(incident_count=1)
