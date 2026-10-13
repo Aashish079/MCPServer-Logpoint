@@ -32,7 +32,7 @@ API_USER_ID = "a" * 24
 OTHER_USER_ID = "b" * 24
 SECRET = "test-secret-key"
 
-_ENV_PREFIXES = ("LOGPOINT_", "MCP_", "VIRUSTOTAL_", "ABUSEIPDB_", "MISP_", "JIRA_", "SMTP_", "MITRE_")
+_ENV_PREFIXES = ("LOGPOINT_", "MCP_", "VIRUSTOTAL_", "ABUSEIPDB_", "MISP_", "JIRA_", "SMTP_", "MITRE_", "TEAMS_")
 
 Handler = Callable[[dict[str, Any]], Any]
 
