@@ -69,7 +69,7 @@ class ServerSettings(BaseSettings):
 
     allow_write_actions: bool = Field(
         default=False,
-        description="Register tools that change Logpoint incidents or reach outside (Jira, email).",
+        description="Register tools that change Logpoint incidents or reach outside (Jira, email, Teams).",
     )
     host: str = "127.0.0.1"
     port: int = 8000
@@ -173,6 +173,30 @@ class SMTPSettings(BaseSettings):
         return bool(self.host and self.from_address and self.allowed_recipients)
 
 
+class TeamsSettings(BaseSettings):
+    """A Microsoft Teams channel, reached through a Workflows (Power Automate) webhook."""
+
+    model_config = SettingsConfigDict(env_prefix="TEAMS_", **_COMMON)
+
+    webhook_url: SecretStr | None = Field(
+        default=None,
+        description="URL from the Teams workflow 'Post to a channel when a webhook request is received'. It is a secret.",
+    )
+    title_prefix: str = "[AI triage]"
+    timeout_seconds: float = 30.0
+
+    @field_validator("webhook_url")
+    @classmethod
+    def require_https(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not value.get_secret_value().lower().startswith("https://"):
+            raise ValueError("TEAMS_WEBHOOK_URL must be an https:// URL.")
+        return value
+
+    @property
+    def enabled(self) -> bool:
+        return self.webhook_url is not None
+
+
 class MitreSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="MITRE_", **_COMMON)
 
@@ -190,6 +214,7 @@ class Settings(BaseModel):
     jira: JiraSettings
     smtp: SMTPSettings
     mitre: MitreSettings
+    teams: TeamsSettings = Field(default_factory=TeamsSettings)
 
     @classmethod
     def load(cls) -> Settings:
@@ -203,4 +228,5 @@ class Settings(BaseModel):
             jira=JiraSettings(),
             smtp=SMTPSettings(),
             mitre=MitreSettings(),
+            teams=TeamsSettings(),
         )

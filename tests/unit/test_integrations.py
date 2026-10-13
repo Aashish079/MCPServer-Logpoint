@@ -3,11 +3,14 @@ import json
 import httpx
 import pytest
 
-from logpoint_mcp.config import AbuseIPDBSettings, JiraSettings, MISPSettings, SMTPSettings, VirusTotalSettings
+from logpoint_mcp.config import (AbuseIPDBSettings, JiraSettings, MISPSettings, SMTPSettings, TeamsSettings,
+                                 VirusTotalSettings)
 from logpoint_mcp.errors import IntegrationError
-from logpoint_mcp.integrations import AbuseIPDBClient, EmailSender, JiraClient, MISPClient, VirusTotalClient
+from logpoint_mcp.integrations import (AbuseIPDBClient, EmailSender, JiraClient, MISPClient, TeamsNotifier,
+                                      VirusTotalClient)
 from logpoint_mcp.integrations.indicators import classify, refang
 from logpoint_mcp.integrations.mitre import parse_bundle, search
+from logpoint_mcp.integrations.teams import defang
 
 
 class Recorder:
@@ -160,3 +163,43 @@ def test_mitre_parse_and_search():
     assert [t.id for t in search(techniques, "t1110")] == ["T1110", "T1110.003"]
     assert search(techniques, "password spraying")[0].id == "T1110.003"
     assert search(techniques, "ransomware") == []
+
+
+async def test_teams_posts_adaptive_card_and_defangs_untrusted_text():
+    recorder = Recorder(httpx.Response(202))
+    notifier = TeamsNotifier(TeamsSettings(webhook_url="https://hook.test/workflows/abc?sig=secret"),
+                             recorder.client(""))
+    result = await notifier.post_triage(
+        incident_ids=["1" * 24], incident_name="Brute force", verdict="true_positive", severity="high",
+        summary="Click [here](https://evil.test/login) now", evidence=["Source http://evil.test/x"],
+        actions_taken=["Commented", "Opened SOC-42"], jira_key="SOC-42",
+    )
+    assert result == {"posted": True, "incident_ids": ["1" * 24], "verdict": "true_positive"}
+    payload = json.loads(recorder.requests[0].content)
+    attachment = payload["attachments"][0]
+    assert payload["type"] == "message" and attachment["contentType"] == "application/vnd.microsoft.card.adaptive"
+    card_text = json.dumps(attachment["content"])
+    assert "https://evil" not in card_text and "http://evil" not in card_text and "](" not in card_text
+    assert "hxxps://evil.test/login" in card_text and "SOC-42" in card_text
+    assert attachment["content"]["body"][0]["style"] == "attention"
+
+
+async def test_teams_errors_never_leak_the_webhook_url():
+    recorder = Recorder(httpx.Response(403, text="forbidden https://hook.test/workflows/abc?sig=secret"))
+    notifier = TeamsNotifier(TeamsSettings(webhook_url="https://hook.test/workflows/abc?sig=secret"),
+                             recorder.client(""))
+    with pytest.raises(IntegrationError) as info:
+        await notifier.post_triage(incident_ids=["1" * 24], incident_name="x", verdict="false_positive",
+                                   severity="low", summary="s")
+    assert "secret" not in str(info.value) and "403" in str(info.value)
+
+
+def test_teams_webhook_must_be_https():
+    with pytest.raises(ValueError, match="https"):
+        TeamsSettings(webhook_url="http://hook.test/x")
+
+
+def test_defang():
+    assert defang("see HTTPS://a.test and [x](http://b.test) javascript:alert(1)") == (
+        "see HxxPS://a.test and [x] (hxxp://b.test) javascript[:]alert(1)"
+    )

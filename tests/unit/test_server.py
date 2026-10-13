@@ -30,7 +30,8 @@ async def test_read_only_by_default(settings, services):
     assert {"list_alert_rules", "get_alert_rule"} <= names  # JWT is configured in the test settings
     assert not names & WRITE_TOOLS
     # Unconfigured integrations are not offered at all.
-    assert not names & {"lookup_virustotal", "lookup_abuseipdb", "lookup_misp", "create_jira_ticket", "send_email"}
+    assert not names & {"lookup_virustotal", "lookup_abuseipdb", "lookup_misp", "create_jira_ticket", "send_email",
+                          "notify_teams_triage"}
 
 
 async def test_write_tools_need_explicit_opt_in(fake):
@@ -127,3 +128,38 @@ def test_http_app_refuses_public_bind_without_auth(settings, fake):
     services = Services.from_settings(settings, logpoint_client=fake.client())
     with pytest.raises(ValueError, match="without authentication"):
         create_http_app(settings, services, create_server(settings, services))
+
+
+async def test_teams_tool_needs_writes_and_a_webhook(fake):
+    import httpx
+
+    from logpoint_mcp.config import TeamsSettings
+
+    settings = make_settings(allow_write_actions=True)
+    settings.teams = TeamsSettings(webhook_url="https://hook.test/workflows/abc")
+    services = Services.from_settings(settings, logpoint_client=fake.client())
+    posted = []
+
+    def handler(request):
+        posted.append(request)
+        return httpx.Response(202)
+
+    await services.teams.aclose()
+    services.teams._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    mcp = create_server(settings, services)
+    assert "notify_teams_triage" in await tool_names(mcp)
+    assert "notify_teams_triage" in mcp.instructions
+
+    with pytest.raises(ToolError, match="incident_id"):
+        await call(mcp, "notify_teams_triage", incident_ids=["x" * 32], incident_name="n",
+                   verdict="false_positive", severity="low", summary="s")
+    result = await call(mcp, "notify_teams_triage", incident_ids=[INC_A], incident_name="Brute force",
+                        verdict="false_positive", severity="low", summary="Known scanner.", jira_key="SOC-1")
+    assert result["posted"] is True and len(posted) == 1
+    await services.aclose()
+
+    read_only = make_settings()
+    read_only.teams = TeamsSettings(webhook_url="https://hook.test/workflows/abc")
+    services = Services.from_settings(read_only, logpoint_client=fake.client())
+    assert "notify_teams_triage" not in await tool_names(create_server(read_only, services))
+    await services.aclose()

@@ -9,7 +9,8 @@ from typing import Any, Protocol
 import httpx
 
 from .config import Settings
-from .integrations import AbuseIPDBClient, AttackCatalog, EmailSender, JiraClient, MISPClient, VirusTotalClient
+from .integrations import (AbuseIPDBClient, AttackCatalog, EmailSender, JiraClient, MISPClient,
+                           TeamsNotifier, VirusTotalClient)
 from .logpoint import AlertRuleService, IncidentService, LogpointTransport, SearchService
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ class Services:
     misp: MISPClient | None = None
     jira: JiraClient | None = None
     email: EmailSender | None = None
+    teams: TeamsNotifier | None = None
     closeables: list[_Closeable] = field(default_factory=list)
 
     @classmethod
@@ -45,11 +47,12 @@ class Services:
             misp=MISPClient(settings.misp) if settings.misp.enabled else None,
             jira=JiraClient(settings.jira) if settings.jira.enabled else None,
             email=EmailSender(settings.smtp) if settings.smtp.enabled else None,
+            teams=TeamsNotifier(settings.teams) if settings.teams.enabled else None,
         )
         services.closeables = [
             client
             for client in (transport, services.mitre, services.virustotal, services.abuseipdb, services.misp,
-                           services.jira, services.email)
+                           services.jira, services.email, services.teams)
             if client is not None
         ]
         return services
@@ -68,4 +71,5 @@ class Services:
             "misp": self.misp is not None,
             "jira": self.jira is not None,
             "email": self.email is not None,
+            "teams": self.teams is not None,
         }

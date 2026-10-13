@@ -13,7 +13,7 @@ It talks to the real Logpoint Incident, Search and Alert Rule APIs. Nothing is m
 1. **Clients.** Claude connects over stdio. n8n and other remote agents use streamable HTTP with a bearer token.
 2. **MCP server.** Tools are grouped as read, enrich and write. Every call passes through guardrails, then reaches the Logpoint clients or the integrations.
 3. **Logpoint SIEM.** The server uses the Incident, Search and Alert Rule APIs.
-4. **Optional services.** VirusTotal, AbuseIPDB, MISP, MITRE ATT&CK, Jira and SMTP.
+4. **Optional services.** VirusTotal, AbuseIPDB, MISP, MITRE ATT&CK, Jira, SMTP and Microsoft Teams.
 
 ## Tools
 
@@ -32,6 +32,7 @@ It talks to the real Logpoint Incident, Search and Alert Rule APIs. Nothing is m
 | `add_incident_comment`, `assign_incidents`, `resolve_incidents`, `close_incidents`, `reopen_incidents` | Change incidents | `MCP_ALLOW_WRITE_ACTIONS=true` |
 | `create_jira_ticket` | Open a Jira issue | writes allowed + `JIRA_*` set |
 | `send_email` | Email allowlisted SOC recipients | writes allowed + `SMTP_*` set |
+| `notify_teams_triage` | Post each triage outcome (verdict, severity, summary, evidence, actions) to a Teams channel | writes allowed + `TEAMS_WEBHOOK_URL` set |
 
 ## Quick start
 
@@ -102,6 +103,12 @@ Every setting is an environment variable. See [.env.example](.env.example) for t
 | `MCP_COMMENT_PREFIX` | `[AI triage]` | Tags every comment the agent writes. |
 | `MCP_LOG_FORMAT` | `text` | `json` for log shipping. Write actions are logged on the `logpoint_mcp.audit` logger. |
 
+### Teams notifications
+
+When `notify_teams_triage` is registered, the server tells the agent to call it once after every triage, after any comment, close or Jira action, so the card lists what actually happened. The card shows the verdict (colour-coded), severity, incident ids, summary, evidence, actions taken and the Jira key.
+
+To set it up, open the channel in Teams and choose **⋯ > Workflows > Post to a channel when a webhook request is received**. Put the URL it gives you in `TEAMS_WEBHOOK_URL`. The older Office 365 connector webhooks are retired and aren't supported.
+
 ## Logpoint behaviour this server handles
 
 These quirks were confirmed against a live Logpoint and are built into the client:
@@ -116,9 +123,9 @@ These quirks were confirmed against a live Logpoint and are built into the clien
 ## Security model
 
 - **Read-only by default.** Write and outbound tools are only registered when `MCP_ALLOW_WRITE_ACTIONS=true`, and each is annotated (`readOnlyHint`, `destructiveHint`) so clients can ask for confirmation.
-- **Log content is untrusted.** Its text can contain prompt injection, so `send_email` only reaches `SMTP_ALLOWED_RECIPIENTS`, and the Jira project is fixed by configuration.
+- **Log content is untrusted.** Its text can contain prompt injection, so `send_email` only reaches `SMTP_ALLOWED_RECIPIENTS`, and the Jira project and Teams channel are fixed by configuration. URLs in Teams cards are defanged (`hxxps://`) and Markdown links are broken, so a log line can't plant a clickable link in the SOC channel.
 - **Private IPs stay internal.** They're never sent to VirusTotal or AbuseIPDB.
-- **Secrets stay out of output.** They're `SecretStr` in memory, and error messages never include request bodies.
+- **Secrets stay out of output.** They're `SecretStr` in memory, and error messages never include request bodies or the Teams webhook URL.
 - **Retries are safe.** Reads retry transient failures with backoff. Writes are only retried when the request can't have reached Logpoint (connection failure, HTTP 429), so a comment is never posted twice.
 
 ## Development
@@ -137,7 +144,7 @@ logpoint_mcp/
 ├── services.py         Builds clients from settings and owns their lifecycle
 ├── http.py             Shared httpx client and retry policy
 ├── logpoint/           Logpoint API clients (transport, incidents, search, alert rules)
-└── integrations/       VirusTotal, AbuseIPDB, MISP, Jira, SMTP, MITRE ATT&CK
+└── integrations/       VirusTotal, AbuseIPDB, MISP, Jira, SMTP, Teams, MITRE ATT&CK
 ```
 
 To add a tool, put the API call in a client under `logpoint/` or `integrations/` and test it against the fake server. Then register it in `server.py` under the right risk group.
