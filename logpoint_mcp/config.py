@@ -182,19 +182,28 @@ class TeamsSettings(BaseSettings):
         default=None,
         description="URL from the Teams workflow 'Post to a channel when a webhook request is received'. It is a secret.",
     )
+    announce_webhook_url: SecretStr | None = Field(
+        default=None,
+        description="URL of a second workflow that posts the start-of-run message with an @channel mention "
+                    "(through Graph, as a user). Optional; it is a secret.",
+    )
     title_prefix: str = "[AI triage]"
     timeout_seconds: float = 30.0
 
-    @field_validator("webhook_url")
+    @field_validator("webhook_url", "announce_webhook_url")
     @classmethod
     def require_https(cls, value: SecretStr | None) -> SecretStr | None:
         if value is not None and not value.get_secret_value().lower().startswith("https://"):
-            raise ValueError("TEAMS_WEBHOOK_URL must be an https:// URL.")
+            raise ValueError("Teams webhook URLs must be https:// URLs.")
         return value
 
     @property
     def enabled(self) -> bool:
         return self.webhook_url is not None
+
+    @property
+    def announce_enabled(self) -> bool:
+        return self.enabled and self.announce_webhook_url is not None
 
 
 class MitreSettings(BaseSettings):

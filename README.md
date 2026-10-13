@@ -32,6 +32,7 @@ It talks to the real Logpoint Incident, Search and Alert Rule APIs. Nothing is m
 | `add_incident_comment`, `assign_incidents`, `resolve_incidents`, `close_incidents`, `reopen_incidents` | Change incidents | `MCP_ALLOW_WRITE_ACTIONS=true` |
 | `create_jira_ticket` | Open a Jira issue | writes allowed + `JIRA_*` set |
 | `send_email` | Email allowlisted SOC recipients | writes allowed + `SMTP_*` set |
+| `announce_teams_triage_run` | Timestamped start-of-run message that @mentions the Teams channel | writes allowed + `TEAMS_WEBHOOK_URL` and `TEAMS_ANNOUNCE_WEBHOOK_URL` set |
 | `notify_teams_triage` | Post each triage outcome (verdict, severity, summary, evidence, actions) to a Teams channel | writes allowed + `TEAMS_WEBHOOK_URL` set |
 
 ## Quick start
@@ -108,6 +109,32 @@ Every setting is an environment variable. See [.env.example](.env.example) for t
 When `notify_teams_triage` is registered, the server tells the agent to call it once after every triage, after any comment, close or Jira action, so the card lists what actually happened. The card shows the verdict (colour-coded), severity, incident ids, summary, evidence, actions taken and the Jira key.
 
 To set it up, open the channel in Teams and choose **⋯ > Workflows > Post to a channel when a webhook request is received**. Put the URL it gives you in `TEAMS_WEBHOOK_URL`. The older Office 365 connector webhooks are retired and aren't supported.
+
+#### Start-of-run announcement with @channel (optional)
+
+With `TEAMS_ANNOUNCE_WEBHOOK_URL` set, the agent calls `announce_teams_triage_run` once before the first card of a run. It posts a message like *@SOC Alerts [AI triage] Triage run started 2026-10-13 09:00 UTC: 5 incidents follow.*
+
+Workflow cards can only mention individual users, not a channel, team or tag. So this message goes through a second workflow that posts with Microsoft Graph **as a user**. Use a dedicated service account, because the message shows up as that account's post.
+
+1. In Power Automate, create a flow with the trigger **When a Teams webhook request is received** (anyone can trigger). The server sends `{"kind", "timestamp", "incident_count", "text"}`.
+2. Add **Office 365 Groups > Send an HTTP request**, signed in as the service account (a member of the team):
+   - Method `POST`, URI `https://graph.microsoft.com/v1.0/teams/<team-id>/channels/<channel-id>/messages`
+   - Body (replace `<channel-name>`, and insert the trigger's `text` as dynamic content):
+
+     ```json
+     {
+       "body": {"contentType": "html", "content": "<at id=\"0\"><channel-name></at> @{triggerBody()?['text']}"},
+       "mentions": [{
+         "id": 0,
+         "mentionText": "<channel-name>",
+         "mentioned": {"conversation": {"id": "<channel-id>", "displayName": "<channel-name>",
+                                        "conversationIdentityType": "channel"}}
+       }]
+     }
+     ```
+3. Save, then put the flow's webhook URL in `TEAMS_ANNOUNCE_WEBHOOK_URL`.
+
+The team and channel ids are in the channel link (**⋯ > Get link to channel**): `groupId` is the team id, and the `19:…@thread.tacv2` part is the channel id. An @channel mention notifies members who show or follow the channel. To reach everyone in the team, use `"conversationIdentityType": "team"` with the team id and name instead.
 
 ## Logpoint behaviour this server handles
 

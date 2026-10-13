@@ -1,6 +1,10 @@
 """Microsoft Teams channel notifications through a Workflows (Power Automate) webhook.
 
-The webhook URL is fixed by configuration and holds its own signature, so it is a secret:
+Two webhooks: one posts the per-incident triage cards, the optional other posts a start-of-run
+message that @mentions the channel. Workflow cards can't mention a channel (only users), so that
+workflow posts through Microsoft Graph as a user instead; the server only sends it the data.
+
+The webhook URLs are fixed by configuration and holds its own signature, so it is a secret:
 it never appears in errors or logs. The text the LLM sends is derived from attacker-influenced
 log data, so URLs are defanged and Markdown links are broken before they reach the channel.
 """
@@ -49,6 +53,7 @@ class TeamsNotifier:
         assert settings.webhook_url is not None
         self._settings = settings
         self._url = settings.webhook_url.get_secret_value()
+        self._announce_url = settings.announce_webhook_url.get_secret_value() if settings.announce_webhook_url else None
         self._client = client or build_client(timeout=settings.timeout_seconds)
 
     async def aclose(self) -> None:
@@ -82,9 +87,32 @@ class TeamsNotifier:
             "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "contentUrl": None,
                              "content": card}],
         }
+        await self._post(self._url, payload)
+        audit.info("Posted %s triage of incident(s) %s to Teams", verdict, incident_ids)
+        return {"posted": True, "incident_ids": incident_ids, "verdict": verdict}
+
+    async def announce_run(self, *, incident_count: int) -> dict[str, Any]:
+        """Start-of-run message. The announcement workflow adds the @channel mention."""
+        if self._announce_url is None:
+            raise IntegrationError("TEAMS_ANNOUNCE_WEBHOOK_URL is not set.")
+        now = datetime.now(timezone.utc)
+        timestamp = now.strftime("%Y-%m-%d %H:%M UTC")
+        noun = "incident" if incident_count == 1 else "incidents"
+        text = f"{self._settings.title_prefix} Triage run started {timestamp}: {incident_count} {noun} follow.".strip()
+        payload = {
+            "kind": "triage_run_started",
+            "timestamp": now.isoformat(timespec="seconds"),
+            "incident_count": incident_count,
+            "text": text,
+        }
+        await self._post(self._announce_url, payload)
+        audit.info("Announced a triage run of %d incident(s) in Teams", incident_count)
+        return {"posted": True, "text": text}
+
+    async def _post(self, url: str, payload: dict[str, Any]) -> None:
         try:
             response = await request_with_retries(
-                self._client, "POST", self._url, idempotent=False, max_retries=2, json=payload
+                self._client, "POST", url, idempotent=False, max_retries=2, json=payload
             )
         except httpx.HTTPError as exc:
             # str(exc) can contain the webhook URL, which is a secret.
@@ -92,15 +120,12 @@ class TeamsNotifier:
         if response.status_code in (401, 403, 404):
             raise IntegrationError(
                 f"The Teams webhook rejected the message (HTTP {response.status_code}). "
-                "Check that TEAMS_WEBHOOK_URL is current and its workflow is turned on."
+                "Check that the webhook URL is current and its workflow is turned on."
             )
         if response.status_code == 429:
             raise IntegrationError("Teams rate limit reached; try again later.")
         if response.is_error:
             raise IntegrationError(f"The Teams webhook returned HTTP {response.status_code}.")
-
-        audit.info("Posted %s triage of incident(s) %s to Teams", verdict, incident_ids)
-        return {"posted": True, "incident_ids": incident_ids, "verdict": verdict}
 
 
 def build_triage_card(

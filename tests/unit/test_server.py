@@ -149,6 +149,9 @@ async def test_teams_tool_needs_writes_and_a_webhook(fake):
     mcp = create_server(settings, services)
     assert "notify_teams_triage" in await tool_names(mcp)
     assert "notify_teams_triage" in mcp.instructions
+    # No announce webhook configured: no announce tool and no instruction to call it.
+    assert "announce_teams_triage_run" not in await tool_names(mcp)
+    assert "announce_teams_triage_run" not in mcp.instructions
 
     with pytest.raises(ToolError, match="incident_id"):
         await call(mcp, "notify_teams_triage", incident_ids=["x" * 32], incident_name="n",
@@ -162,4 +165,16 @@ async def test_teams_tool_needs_writes_and_a_webhook(fake):
     read_only.teams = TeamsSettings(webhook_url="https://hook.test/workflows/abc")
     services = Services.from_settings(read_only, logpoint_client=fake.client())
     assert "notify_teams_triage" not in await tool_names(create_server(read_only, services))
+    await services.aclose()
+
+
+async def test_teams_announce_tool_when_its_webhook_is_set(fake):
+    from logpoint_mcp.config import TeamsSettings
+
+    settings = make_settings(allow_write_actions=True)
+    settings.teams = TeamsSettings(webhook_url="https://hook.test/cards", announce_webhook_url="https://hook.test/a")
+    services = Services.from_settings(settings, logpoint_client=fake.client())
+    mcp = create_server(settings, services)
+    assert {"announce_teams_triage_run", "notify_teams_triage"} <= await tool_names(mcp)
+    assert "announce_teams_triage_run" in mcp.instructions
     await services.aclose()
