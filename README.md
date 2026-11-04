@@ -27,7 +27,11 @@ It talks to the real Logpoint Incident, Search and Alert Rule APIs. Nothing is m
 | `search_logs` / `get_search_results` | Run a Logpoint query and wait for results | always |
 | `list_repos` | Searchable repos | always |
 | `mitre_attack_lookup` | MITRE ATT&CK Enterprise techniques by id or keywords (official STIX catalog) | always |
-| `list_alert_rules` / `get_alert_rule` | Alert rule queries, risk and MITRE mapping | `LOGPOINT_JWT_*` set |
+| `list_alert_rules` / `get_alert_rule` | Alert rule queries, risk, ATT&CK tags (decoded), metadata, notifications and active state | `LOGPOINT_JWT_*` set |
+| `validate_alert_rule` | Check a proposed rule and test-run its query (syntax, matching events, triggers per day). Changes nothing. | `LOGPOINT_JWT_*` set |
+| `create_alert_rule`, `update_alert_rule`, `activate_alert_rules`, `deactivate_alert_rules` | Change alert rules (preview first, then apply with a confirm token) | `LOGPOINT_JWT_*` set + `MCP_ALLOW_ALERT_RULE_WRITES=true` |
+| `set_alert_rule_email_notification` | Set a rule's email notification: recipients, subject, template (copied from an existing rule or built from columns) | rule writes allowed |
+| `delete_alert_rules` | Permanently delete inactive alert rules, after backing them up | rule writes allowed + `MCP_ALLOW_ALERT_RULE_DELETE=true` |
 | `lookup_virustotal` / `lookup_abuseipdb` / `lookup_misp` | Indicator reputation | API key set |
 | `add_incident_comment`, `assign_incidents`, `resolve_incidents`, `close_incidents`, `reopen_incidents` | Change incidents | `MCP_ALLOW_WRITE_ACTIONS=true` |
 | `create_jira_ticket` | Open a Jira issue | writes allowed + `JIRA_*` set |
@@ -103,6 +107,36 @@ Every setting is an environment variable. See [.env.example](.env.example) for t
 | `MCP_ALLOW_WRITE_ACTIONS` | `false` | Off: the agent can only read. |
 | `MCP_COMMENT_PREFIX` | `[AI triage]` | Tags every comment the agent writes. |
 | `MCP_LOG_FORMAT` | `text` | `json` for log shipping. Write actions are logged on the `logpoint_mcp.audit` logger. |
+| `MCP_ALLOW_ALERT_RULE_WRITES` / `MCP_ALLOW_ALERT_RULE_DELETE` | `false` / `false` | Alert rule changes, separate from `MCP_ALLOW_WRITE_ACTIONS`. See [Alert rule management](#alert-rule-management). |
+
+## Alert rule management
+
+With `MCP_ALLOW_ALERT_RULE_WRITES=true` (and the `LOGPOINT_JWT_*` settings), the agent can create, update, activate and deactivate alert rules. With `MCP_ALLOW_ALERT_RULE_DELETE=true` as well, it can delete them. The JWT scope gains `alertrules:write` automatically, so the Logpoint user behind `LOGPOINT_JWT_SUBJECT` needs alert-rule rights. Give it nothing more.
+
+An agent that can turn off detections can be talked into turning them off by text in a log line. So every change goes through checks in code that the agent can't skip:
+
+- **Preview, then apply.** Each write tool defaults to `dry_run=true` and returns a preview (payload or field-level diff, query test) plus a `confirm_token`. The change only happens when the same call is repeated with `dry_run=false` and that token, which the agent is told to do only after the analyst approves. The token is an HMAC over the exact change and each rule's current state. It is single-use and expires after `MCP_ALERT_RULE_CONFIRM_TTL_SECONDS` (900). If the arguments differ from the preview, or someone edits the rule in Logpoint in between, the apply is refused.
+- **Only the server's own rules.** Rules the server creates carry `managed_by=logpoint-mcp` in their metadata and the name prefix `MCP_ALERT_RULE_NAME_PREFIX` (`AI - `). With `MCP_ALERT_RULE_SCOPE=managed` (the default), rules without the tag can't be changed. Set `all` to allow human-authored rules.
+- **Protected rules.** `MCP_ALERT_RULE_PROTECTED` takes rule ids or case-insensitive name globs (`*ransomware*,*edr tamper*`). Those rules can never be changed, deactivated or deleted, whatever the scope.
+- **New rules start inactive.** Activation is a separate, separately approved step. Before activating, the preview test-runs each rule's query over the last 24 hours and refuses failing queries, or rules that could fire more than `MCP_ALERT_RULE_MAX_DAILY_TRIGGERS` (50) times a day.
+- **Delete is guarded twice.** Only inactive rules can be deleted, so removing a running detection takes two approved changes. Before deleting, each rule's full definition is written to `MCP_ALERT_RULE_BACKUP_DIR` (mode 0600). If the backup fails, nothing is deleted.
+- **Rate limit.** At most `MCP_ALERT_RULE_MAX_CHANGES_PER_HOUR` (10) rule changes per hour. Each rule counts.
+- **Bounded input.** Rule fields are typed and limited. Incident-view column names and labels can't contain HTML or Jinja, and labels are escaped as well. Queries that match everything (`*`) are rejected. `rule_yaml` accepts the [alert SDK](https://gitlab.com/logpoint/everest/security-research/alert-sdk)'s rule file format. File paths are never accepted.
+- **Audit.** Every applied change is logged on `logpoint_mcp.audit` with the rule ids, names, changed fields and reason.
+
+### ATT&CK tags, metadata, columns and email
+
+- **ATT&CK tags.** `create_alert_rule` and `update_alert_rule` take `mitre: [{"technique_id": "T1558.003", "tactic": "Credential Access"}]`. The tactic is only needed when a technique belongs to several. On update, the list replaces the rule's tags. Logpoint stores each tag as `md5("<technique id> <technique name> <tactic name>")`, using names from its own ATT&CK release. The server computes these from a pinned release (`MITRE_LOGPOINT_ATTACK_URL`, default v18.1, which reproduced every tag on the live rules), not from the latest catalog, whose names differ. `get_alert_rule` decodes tags back to techniques.
+- **Metadata.** `metadata: {"author", "references", "threat_actor", "associated_malware", "rule_status", "rule_version"}`. It's written to the rule's `taxonomy.metadata` the way existing rules have it: one entry per field, with references comma-separated. On update, only the fields you pass are replaced. Values are plain text, and references must be http(s) URLs.
+- **Incident ownership.** `ownership: {"assignee", "visible_to_usergroups" | "visibility_from_rule_id"}` sets who owns a rule's incidents and which user groups see them, on create or update. The assignee must be a Logpoint user (`list_users`); the server stores the exact user name, as Logpoint does. Visibility groups are user groups from `list_users`, given by name or id, or copied from an existing rule (`visibility_from_rule_id`). Logpoint stores them by name, so the server stores the exact group name.
+- **Manageable by** (`rbac_config`) is read-only: `get_alert_rule` shows it, but it can't be set. Logpoint fills it in itself, and `update_api` fails with "got multiple values for keyword argument 'rbac_config'" when the request carries it (verified 2026-11-03). Change it in the console.
+- **Aggregate columns.** `field_mapping` (and email `columns`) accept the aggregate columns of a chart query, such as `{"count()": "TICKETS", "distinct_count(host)": "HOSTS"}`. They render as `{{row['count()']}}`.
+- **Email notifications.** `set_alert_rule_email_notification` uses Logpoint's EmailNotification API. The body template is either copied from an existing rule (`template_from_rule_id`, the SOC's own template; recipients and logo are copied too) or built by the server from `columns`. It never takes free-form Jinja or HTML. Recipients must be recipients of the copied rule or match `MCP_ALERT_RULE_EMAIL_ALLOWED_RECIPIENTS` (addresses or `@domains`). The subject is plain text, where `{rule_name}` becomes the alert name. The same preview, approval, ownership and rate-limit rules apply. Syslog and HTTP notifications are not supported: HTTP would let the agent send alert data to any URL.
+- **Validation errors.** When Logpoint rejects a rule (HTTP 422), its field-level `validationErrors` are passed on to the agent.
+
+New rules search `LOGPOINT_ALERT_RULE_REPOS` (`default,_logpoint`) unless the request names repos. Their incidents are owned by `LOGPOINT_ALERT_RULE_ASSIGNEE`, which defaults to the JWT subject. The payload format is ported from the alert SDK. A unit test compares it with the SDK's output when the SDK is importable (`PYTHONPATH=../alert-sdk`, plus `requests`).
+
+Not verified against a live Logpoint yet: the responses of `create_api`, `update_api`, `activate_api`, `deactivate_api`, `delete_api` and `EmailNotification/create_api`, and whether `update_api` accepts the shape `read_api` returns. Try every tool on a lab instance before enabling writes in production. The tag hashing, metadata format and email notification shape were read from live rules (2026-11-02).
 
 ### Teams notifications
 
@@ -149,7 +183,7 @@ These quirks were confirmed against a live Logpoint and are built into the clien
 
 ## Security model
 
-- **Read-only by default.** Write and outbound tools are only registered when `MCP_ALLOW_WRITE_ACTIONS=true`, and each is annotated (`readOnlyHint`, `destructiveHint`) so clients can ask for confirmation.
+- **Read-only by default.** Write and outbound tools are only registered when `MCP_ALLOW_WRITE_ACTIONS=true` (alert rule changes: `MCP_ALLOW_ALERT_RULE_WRITES=true`), and each is annotated (`readOnlyHint`, `destructiveHint`) so clients can ask for confirmation.
 - **Log content is untrusted.** Its text can contain prompt injection, so `send_email` only reaches `SMTP_ALLOWED_RECIPIENTS`, and the Jira project and Teams channel are fixed by configuration. URLs in Teams cards are defanged (`hxxps://`) and Markdown links are broken, so a log line can't plant a clickable link in the SOC channel.
 - **Private IPs stay internal.** They're never sent to VirusTotal or AbuseIPDB.
 - **Secrets stay out of output.** They're `SecretStr` in memory, and error messages never include request bodies or the Teams webhook URL.

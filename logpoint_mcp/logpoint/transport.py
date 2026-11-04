@@ -53,9 +53,14 @@ class LogpointTransport:
         idempotent: bool,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        form: dict[str, str] | None = None,
     ) -> dict[str, Any]:
+        """`form` is sent as multipart/form-data (the notification endpoints require it)."""
         headers = {"Authorization": f"Bearer {self._bearer_token()}"}
-        response = await self._send(method, endpoint, idempotent=idempotent, params=params, json=json, headers=headers)
+        files = {key: (None, value) for key, value in form.items()} if form else None
+        response = await self._send(
+            method, endpoint, idempotent=idempotent, params=params, json=json, files=files, headers=headers
+        )
         return self._parse(response, endpoint, require_success=False)
 
     def _credentials(self) -> dict[str, str]:
@@ -116,7 +121,12 @@ class LogpointTransport:
 
 def _message(body: Any) -> str:
     if isinstance(body, dict):
+        # The Alert Rule API reports field errors as {"message": "Invalid Request", "validationErrors": {...}}.
+        details = body.get("validationErrors")
         for key in ("message", "error", "errors", "detail"):
             if body.get(key):
-                return str(body[key])[:500]
+                text = str(body[key])
+                return (f"{text}: {details}" if details else text)[:1000]
+        if details:
+            return str(details)[:1000]
     return str(body)[:500]

@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable
+from email.parser import BytesParser
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -95,6 +96,10 @@ def _decode(request: httpx.Request) -> dict[str, Any]:
         payload.update(json.loads(request.content))
     elif content_type.startswith("application/x-www-form-urlencoded"):
         payload.update({k: v[0] for k, v in parse_qs(request.content.decode()).items()})
+    elif content_type.startswith("multipart/form-data"):
+        message = BytesParser().parsebytes(f"Content-Type: {content_type}\r\n\r\n".encode() + request.read())
+        for part in message.get_payload():
+            payload[part.get_param("name", header="content-disposition")] = part.get_payload(decode=True).decode()
     if isinstance(payload.get("requestData"), str):
         payload["requestData"] = json.loads(payload["requestData"])
     return payload

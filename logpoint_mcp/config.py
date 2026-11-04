@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import AnyHttpUrl, BaseModel, Field, SecretStr, field_validator
+from pydantic import AnyHttpUrl, BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 _COMMON = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
@@ -43,11 +43,24 @@ class LogpointSettings(BaseSettings):
     jwt_subject: str | None = None
     jwt_scope: str = "alertrules:read"
     jwt_algorithm: str = "HS256"
+    # Defaults for rules the MCP server creates.
+    alert_rule_repos: CsvList = Field(
+        default_factory=lambda: ["default", "_logpoint"],
+        description="Repo names (or addresses) new alert rules search when the request names none",
+    )
+    alert_rule_assignee: str | None = Field(
+        default=None, description="Owner of incidents from rules the server creates. Defaults to the JWT subject."
+    )
 
     # Search behaviour and result size (results go into an LLM context window).
     search_timeout_seconds: float = 90.0
     max_rows: int = 500
     max_field_chars: int = 2000
+
+    @field_validator("alert_rule_repos", mode="before")
+    @classmethod
+    def split_csv(cls, value: object) -> object:
+        return _split_csv(value)
 
     @property
     def base_url(self) -> str:
@@ -71,6 +84,42 @@ class ServerSettings(BaseSettings):
         default=False,
         description="Register tools that change Logpoint incidents or reach outside (Jira, email, Teams).",
     )
+    # Alert rule changes are a separate opt-in: being allowed to close incidents must not imply being
+    # allowed to change what Logpoint detects.
+    allow_alert_rule_writes: bool = Field(
+        default=False, description="Register tools that create, update, activate and deactivate alert rules."
+    )
+    allow_alert_rule_delete: bool = Field(
+        default=False, description="Also register delete_alert_rules. Needs MCP_ALLOW_ALERT_RULE_WRITES=true too."
+    )
+    alert_rule_scope: Literal["managed", "all"] = Field(
+        default="managed",
+        description="managed: only rules this server created can be changed. all: any rule not protected.",
+    )
+    alert_rule_protected: CsvList = Field(
+        default_factory=list,
+        description="Rule ids or case-insensitive name globs (e.g. *ransomware*) that can never be changed or deleted",
+    )
+    alert_rule_name_prefix: str = Field(
+        default="AI - ",
+        pattern=r"^[A-Za-z0-9 _-]*$",
+        description="Prepended to the names of rules the server creates. Logpoint only allows letters, digits, "
+                    "spaces, _ and - in rule names.",
+    )
+    alert_rule_email_allowed_recipients: CsvList = Field(
+        default_factory=list,
+        description="Addresses or @domains alert rule email notifications may go to, besides the recipients of the "
+                    "rule a notification is copied from",
+    )
+    alert_rule_max_changes_per_hour: int = Field(default=10, ge=1)
+    alert_rule_max_daily_triggers: int = Field(
+        default=50, ge=1, description="Activation is refused when a test search suggests more triggers per day."
+    )
+    alert_rule_confirm_ttl_seconds: int = Field(default=900, ge=60, le=3600)
+    alert_rule_backup_dir: Path = Field(
+        default=Path.home() / ".cache" / "logpoint-mcp" / "alert-rule-backups",
+        description="Where a rule's full definition is saved before it is deleted",
+    )
     host: str = "127.0.0.1"
     port: int = 8000
     path: str = "/mcp"
@@ -84,7 +133,8 @@ class ServerSettings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_format: Literal["text", "json"] = "text"
 
-    @field_validator("auth_tokens", "allowed_hosts", mode="before")
+    @field_validator("auth_tokens", "allowed_hosts", "alert_rule_protected", "alert_rule_email_allowed_recipients",
+                     mode="before")
     @classmethod
     def split_csv(cls, value: object) -> object:
         return _split_csv(value)
@@ -212,6 +262,13 @@ class MitreSettings(BaseSettings):
     attack_url: str = "https://raw.githubusercontent.com/mitre/cti/master/enterprise-attack/enterprise-attack.json"
     cache_path: Path = Path.home() / ".cache" / "logpoint-mcp" / "enterprise-attack.json"
     cache_max_age_days: int = 30
+    # Logpoint identifies ATT&CK tags on alert rules by md5("<technique id> <technique name> <tactic name>"), with
+    # names from its own ATT&CK release. Names change between releases, so tags are computed from a pinned one.
+    # v18.1 reproduced every tag hash used by the live rules (2026-11-02); `master` did not.
+    logpoint_attack_url: str = (
+        "https://raw.githubusercontent.com/mitre/cti/ATT%26CK-v18.1/enterprise-attack/enterprise-attack.json"
+    )
+    logpoint_cache_path: Path = Path.home() / ".cache" / "logpoint-mcp" / "enterprise-attack-logpoint.json"
 
 
 class Settings(BaseModel):
@@ -224,6 +281,14 @@ class Settings(BaseModel):
     smtp: SMTPSettings
     mitre: MitreSettings
     teams: TeamsSettings = Field(default_factory=TeamsSettings)
+
+    @model_validator(mode="after")
+    def _alert_rule_write_scope(self) -> Settings:
+        """Alert rule writes need the `alertrules:write` JWT scope; ask for it only when they are enabled."""
+        scopes = self.logpoint.jwt_scope.split()
+        if self.server.allow_alert_rule_writes and "alertrules:write" not in scopes:
+            self.logpoint.jwt_scope = " ".join([*scopes, "alertrules:write"])
+        return self
 
     @classmethod
     def load(cls) -> Settings:

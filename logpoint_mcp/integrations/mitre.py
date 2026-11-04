@@ -60,6 +60,10 @@ class AttackCatalog:
         await self._ensure_loaded()
         return [technique.to_dict() for technique in search(self._techniques, query, limit)]
 
+    async def techniques(self) -> list[Technique]:
+        await self._ensure_loaded()
+        return self._techniques
+
     async def _ensure_loaded(self) -> None:
         if self._techniques:
             return
@@ -111,6 +115,12 @@ def load_bundle(path: Path) -> list[Technique]:
 
 
 def parse_bundle(bundle: dict[str, Any]) -> list[Technique]:
+    # Official tactic names ("Command and Control"); title-casing the phase name is only a fallback.
+    tactic_names = {
+        obj["x_mitre_shortname"]: obj.get("name", "")
+        for obj in bundle.get("objects", [])
+        if obj.get("type") == "x-mitre-tactic" and obj.get("x_mitre_shortname")
+    }
     techniques = []
     for obj in bundle.get("objects", []):
         if obj.get("type") != "attack-pattern" or obj.get("revoked") or obj.get("x_mitre_deprecated"):
@@ -124,7 +134,7 @@ def parse_bundle(bundle: dict[str, Any]) -> list[Technique]:
             id=reference["external_id"],
             name=obj.get("name", ""),
             tactics=tuple(
-                phase["phase_name"].replace("-", " ").title()
+                tactic_names.get(phase["phase_name"]) or phase["phase_name"].replace("-", " ").title()
                 for phase in obj.get("kill_chain_phases", [])
                 if phase.get("kill_chain_name") == "mitre-attack"
             ),
