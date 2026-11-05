@@ -1,3 +1,4 @@
+import secrets
 import time
 
 import pytest
@@ -105,7 +106,8 @@ async def test_close_with_comment_sanitises_and_tags_the_comment(fake):
 
 
 def test_http_app_requires_a_bearer_token(fake):
-    settings = make_settings(auth_tokens="token-1,token-2")
+    tokens = [secrets.token_urlsafe(16), secrets.token_urlsafe(16)]
+    settings = make_settings(auth_tokens=",".join(tokens))
     services = Services.from_settings(settings, logpoint_client=fake.client())
     fake.on("getalloweddata", {"success": True, "timezone": "UTC"})
     app = create_http_app(settings, services, create_server(settings, services))
@@ -119,7 +121,7 @@ def test_http_app_requires_a_bearer_token(fake):
         assert client.post("/mcp", json=initialize, headers=headers).status_code == 401
         wrong = {**headers, "Authorization": "Bearer nope"}
         assert client.post("/mcp", json=initialize, headers=wrong).status_code == 401
-        ok = {**headers, "Authorization": "Bearer token-2"}
+        ok = {**headers, "Authorization": f"Bearer {tokens[1]}"}
         assert client.post("/mcp", json=initialize, headers=ok).status_code == 200
 
 

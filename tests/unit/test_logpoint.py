@@ -7,7 +7,7 @@ import pytest
 from logpoint_mcp.errors import LogpointAPIError, LogpointAuthError, LogpointError, LogpointSearchError, NotFoundError
 from logpoint_mcp.logpoint import IncidentService, LogpointTransport, SearchService
 
-from .conftest import API_USER, API_USER_ID, OTHER_USER_ID, SECRET, FakeLogpoint
+from .conftest import API_USER, API_USER_ID, JWT_SECRET, OTHER_USER_ID, SECRET, FakeLogpoint
 
 INC_MINE = "1" * 24
 INC_OTHER = "2" * 24
@@ -79,7 +79,7 @@ async def test_director_api_uses_a_signed_jwt(transport, fake):
     await transport.director_api("GET", "AlertRules/read_api", params={"id": "r1"}, idempotent=True)
     (payload,) = fake.calls("AlertRules/read_api")
     scheme, token = payload["_authorization"].split()
-    claims = jwt.decode(token, "jwt-secret-for-tests-0123456789abcdef", algorithms=["HS256"])
+    claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
     assert scheme == "Bearer" and claims["sub"] == "mcp" and claims["scope"] == "alertrules:read"
     assert "secret_key" not in payload
 

@@ -17,7 +17,8 @@ from .rule_model import MitreTag
 
 
 def tag_hash(technique_id: str, technique_name: str, tactic: str) -> str:
-    return hashlib.md5(f"{technique_id} {technique_name} {tactic}".encode()).hexdigest()
+    # md5 is Logpoint's tag id format, not a security control.
+    return hashlib.md5(f"{technique_id} {technique_name} {tactic}".encode(), usedforsecurity=False).hexdigest()
 
 
 class AttackTags:

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from collections.abc import Callable
 from email.parser import BytesParser
 from typing import Any
@@ -31,7 +32,9 @@ BASE_URL = "https://logpoint.test"
 API_USER = "api-user"
 API_USER_ID = "a" * 24
 OTHER_USER_ID = "b" * 24
-SECRET = "test-secret-key"
+# Credentials are generated per run, so none live in the repository (Snyk CWE-547/CWE-321).
+SECRET = secrets.token_urlsafe(16)
+JWT_SECRET = secrets.token_hex(32)
 
 _ENV_PREFIXES = ("LOGPOINT_", "MCP_", "VIRUSTOTAL_", "ABUSEIPDB_", "MISP_", "JIRA_", "SMTP_", "MITRE_", "TEAMS_")
 
@@ -113,7 +116,7 @@ def make_settings(**server: Any) -> Settings:
             secret_key=SECRET,
             max_retries=1,
             search_timeout_seconds=5,
-            jwt_secret="jwt-secret-for-tests-0123456789abcdef",
+            jwt_secret=JWT_SECRET,
             jwt_subject="mcp",
         ),
         server=ServerSettings(**server),

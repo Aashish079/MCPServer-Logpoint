@@ -13,7 +13,7 @@ from logpoint_mcp.logpoint.rule_model import AlertRuleSpec, spec_from_sdk_yaml
 from logpoint_mcp.server import create_server
 from logpoint_mcp.services import Services
 
-from .conftest import FakeLogpoint, make_settings
+from .conftest import JWT_SECRET, FakeLogpoint, make_settings
 
 RULE_WRITE_TOOLS = {"create_alert_rule", "update_alert_rule", "activate_alert_rules", "deactivate_alert_rules"}
 REPOS = [
@@ -357,7 +357,7 @@ async def test_write_requests_carry_the_write_scope(rule_server, fake, store):
     store.add("r1", "AI - Rule")
     await two_step(rule_server, "deactivate_alert_rules", rule_ids=["r1"], reason="Too many false positives")
     token = fake.calls("AlertRules/deactivate_api")[0]["_authorization"].split()[1]
-    claims = jwt.decode(token, "jwt-secret-for-tests-0123456789abcdef", algorithms=["HS256"])
+    claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
     assert claims["scope"] == "alertrules:read alertrules:write"
 
 
