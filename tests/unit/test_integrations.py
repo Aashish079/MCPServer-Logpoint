@@ -222,3 +222,83 @@ async def test_teams_announce_needs_its_own_webhook():
     notifier = TeamsNotifier(TeamsSettings(webhook_url="https://hook.test/cards"), Recorder(httpx.Response(202)).client(""))
     with pytest.raises(IntegrationError, match="TEAMS_ANNOUNCE_WEBHOOK_URL"):
         await notifier.announce_run(incident_count=1)
+
+
+async def test_teams_alert_rule_card_defangs_and_marks_proposals():
+    recorder = Recorder(httpx.Response(202))
+    notifier = TeamsNotifier(TeamsSettings(webhook_url="https://hook.test/cards"), recorder.client(""))
+    result = await notifier.post_alert_rule(
+        stage="proposed", name="IDE spawning shell", query='norm_id=CrowdStrike ParentBaseFileName="Cursor*"',
+        summary="See [report](https://evil.test/a)", risk="high", mitre=["T1195.002"],
+        references=["https://www.bleepingcomputer.test/story"], false_positives=["Build scripts"],
+    )
+    assert result == {"posted": True, "stage": "proposed", "name": "IDE spawning shell", "rule_id": None}
+    card = json.loads(recorder.requests[0].content)["attachments"][0]["content"]
+    text = json.dumps(card)
+    assert "https://" not in text and "](" not in text and "hxxps://www.bleepingcomputer.test/story" in text
+    facts = {f["title"]: f["value"] for f in next(b for b in card["body"] if b["type"] == "FactSet")["facts"]}
+    assert facts["Status"] == "Proposal only, not created in Logpoint" and facts["MITRE ATT&CK"] == "T1195.002"
+    assert facts["Risk"] == "High" and "Rule id" not in facts
+    query = next(b for b in card["body"] if b.get("fontType") == "Monospace")
+    assert query["text"] == 'norm_id=CrowdStrike ParentBaseFileName="Cursor*"'
+    assert card["body"][0]["style"] == "accent"
+
+
+async def test_teams_alert_rules_go_to_their_own_webhook_when_set():
+    recorder = Recorder(httpx.Response(202))
+    notifier = TeamsNotifier(TeamsSettings(webhook_url="https://hook.test/triage",
+                                           alert_rule_webhook_url="https://hook.test/rules"), recorder.client(""))
+    await notifier.post_alert_rule(stage="proposed", name="Rule", query="norm_id=X")
+    await notifier.post_triage(incident_ids=["a" * 24], incident_name="Incident", verdict="false_positive",
+                               severity="low", summary="Benign")
+    assert [str(r.url) for r in recorder.requests] == ["https://hook.test/rules", "https://hook.test/triage"]
+
+
+def test_teams_alert_rule_webhook_must_be_https():
+    with pytest.raises(ValueError):
+        TeamsSettings(webhook_url="https://hook.test/triage", alert_rule_webhook_url="http://hook.test/rules")
+
+
+async def test_teams_rides_out_a_network_blip_and_never_logs_the_signature(monkeypatch, caplog):
+    import logpoint_mcp.http as http_module
+
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr(http_module.asyncio, "sleep", no_sleep)
+    url = "https://hook.test/workflows/abc?sig=secret"
+    attempts = []
+
+    def handler(request):
+        attempts.append(request)
+        if len(attempts) < 4:  # the network is down for the first three attempts
+            raise httpx.ConnectError(f"[Errno 8] nodename nor servname provided, or not known: {url}")
+        return httpx.Response(202)
+
+    notifier = TeamsNotifier(TeamsSettings(webhook_url=url), httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    with caplog.at_level("WARNING", logger="logpoint_mcp.http"):
+        result = await notifier.post_alert_rule(stage="proposed", name="Rule", query="norm_id=X")
+    assert result["posted"] is True and len(attempts) == 4
+    assert "secret" not in caplog.text and "nodename nor servname" in caplog.text
+    assert "https://hook.test/workflows/abc " in caplog.text  # path kept, query dropped
+
+    attempts.clear()
+    notifier = TeamsNotifier(TeamsSettings(webhook_url=url), httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: attempts.append(request) or (_ for _ in ()).throw(httpx.ConnectError("[Errno 8] no DNS")))))
+    with pytest.raises(IntegrationError) as info:
+        await notifier.post_alert_rule(stage="proposed", name="Rule", query="norm_id=X")
+    assert len(attempts) == 5 and "secret" not in str(info.value)
+    assert "ConnectError: [Errno 8] no DNS" in str(info.value) and "Nothing was posted" in str(info.value)
+
+
+def test_describe_error_strips_urls():
+    from logpoint_mcp.http import describe_error, redact_url
+
+    try:
+        try:
+            raise OSError("connect to https://hook.test/x?sig=secret failed")
+        except OSError as inner:
+            raise httpx.ConnectError("wrapped") from inner
+    except httpx.ConnectError as exc:
+        assert describe_error(exc) == "ConnectError: connect to <url> failed"
+    assert redact_url("https://hook.test/x?sig=secret#f") == "https://hook.test/x"

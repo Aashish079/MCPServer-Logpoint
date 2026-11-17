@@ -38,6 +38,7 @@ It talks to the real Logpoint Incident, Search and Alert Rule APIs. Nothing is m
 | `send_email` | Email allowlisted SOC recipients | writes allowed + `SMTP_*` set |
 | `announce_teams_triage_run` | Timestamped start-of-run message that @mentions the Teams channel | writes allowed + `TEAMS_WEBHOOK_URL` and `TEAMS_ANNOUNCE_WEBHOOK_URL` set |
 | `notify_teams_triage` | Post each triage outcome (verdict, severity, summary, evidence, actions) to a Teams channel | writes allowed + `TEAMS_WEBHOOK_URL` set |
+| `notify_teams_alert_rule` | Post an alert rule to the Teams channel: a proposal, or a rule that was created, updated, activated or deactivated | writes allowed + `TEAMS_WEBHOOK_URL` set |
 
 ## Quick start
 
@@ -142,7 +143,9 @@ Not verified against a live Logpoint yet: the responses of `create_api`, `update
 
 When `notify_teams_triage` is registered, the server tells the agent to call it once after every triage, after any comment, close or Jira action, so the card lists what actually happened. The card shows the verdict (colour-coded), severity, incident ids, summary, evidence, actions taken and the Jira key.
 
-To set it up, open the channel in Teams and choose **⋯ > Workflows > Post to a channel when a webhook request is received**. Put the URL it gives you in `TEAMS_WEBHOOK_URL`. The older Office 365 connector webhooks are retired and aren't supported.
+`notify_teams_alert_rule` posts an alert rule card to the channel behind `TEAMS_ALERT_RULE_WEBHOOK_URL`, or to the triage channel when that isn't set. With `stage=proposed` it shows a rule the agent suggests but didn't create (for example from a threat-intel digest): name, query, risk, condition, log source, ATT&CK ids, why it matters, how the query was tested, expected false positives and the source story. The card says it is a proposal only. With `created`, `updated`, `activated` or `deactivated` it needs a `rule_id`, and the name, query, risk, condition, repos, ATT&CK tags and active state are read from Logpoint, so the card shows the rule as it really is. The tool never changes Logpoint. All text is defanged, like the triage cards.
+
+To set it up, open the channel in Teams and choose **⋯ > Workflows > Post to a channel when a webhook request is received**. Put the URL it gives you in `TEAMS_WEBHOOK_URL`. To send alert rule cards to a separate channel, create the same workflow in that channel and put its URL in `TEAMS_ALERT_RULE_WEBHOOK_URL`. The older Office 365 connector webhooks are retired and aren't supported.
 
 #### Start-of-run announcement with @channel (optional)
 

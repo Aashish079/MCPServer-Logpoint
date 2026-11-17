@@ -22,7 +22,7 @@ from pydantic import Field
 
 from .config import ServerSettings, Settings
 from .errors import LogpointMCPError, LogpointSearchError, NotFoundError
-from .integrations.teams import Severity, Verdict
+from .integrations.teams import RuleStage, Severity, Verdict
 from .logpoint import SearchService
 from .logpoint.alert_rule_policy import PolicyError
 from .logpoint.alert_rules import email_notification
@@ -63,6 +63,10 @@ TEAMS_INSTRUCTIONS = """
 - When you finish triaging an incident, whatever the verdict, call notify_teams_triage once
   with the outcome, after any comment, close or Jira action, so the actions you list really
   happened. Incidents triaged together with one verdict can share one notification.
+- To share an alert rule in Teams, call notify_teams_alert_rule: stage=proposed for a rule you
+  suggest but did not create (e.g. from threat intel), or the stage that happened (created,
+  updated, activated, deactivated) with the rule_id, after the change was applied. Never use
+  notify_teams_triage for anything but triaged incidents.
 """
 
 ALERT_RULE_INSTRUCTIONS = """
@@ -1034,3 +1038,91 @@ def _register_notifications(mcp: FastMCP, settings: Settings, services: Services
                 actions_taken=actions_taken,
                 jira_key=jira_key.strip() if jira_key else None,
             )
+
+        @mcp.tool(annotations=EXTERNAL_WRITE)
+        @_guard
+        async def notify_teams_alert_rule(
+            stage: Annotated[
+                RuleStage,
+                Field(description="proposed: a rule you suggest that does not exist in Logpoint. created, updated, "
+                                  "activated, deactivated: what was just done to an existing rule (needs rule_id)."),
+            ],
+            summary: Annotated[
+                str, Field(min_length=1, max_length=3000,
+                           description="Why the rule matters: the threat it detects, and why now.")
+            ],
+            rule_id: Annotated[
+                str | None,
+                Field(max_length=64, description="The rule's id. Its name, query, risk, condition, repos, ATT&CK "
+                                                 "tags and state are then read from Logpoint."),
+            ] = None,
+            name: Annotated[str | None, Field(max_length=200, description="Rule name (proposals).")] = None,
+            query: Annotated[str | None, Field(max_length=4000, description="Logpoint query (proposals).")] = None,
+            risk: Severity | None = None,
+            condition: Annotated[
+                str | None, Field(max_length=200, description="Trigger condition, e.g. 'more than 0 in 60 minutes'.")
+            ] = None,
+            log_source: Annotated[str | None, Field(max_length=200, description="e.g. FDR / CrowdStrike process events.")] = None,
+            mitre: Annotated[
+                list[Annotated[str, Field(pattern=r"^[Tt]\d{4}(\.\d{3})?$")]] | None,
+                Field(max_length=20, description="ATT&CK technique ids (proposals), e.g. T1195.002."),
+            ] = None,
+            validation: Annotated[
+                str | None, Field(max_length=1000, description="How the query was tested and what it returned.")
+            ] = None,
+            false_positives: Annotated[
+                list[TriageNote] | None, Field(max_length=10, description="Expected false positives, one per item.")
+            ] = None,
+            source: Annotated[
+                str | None, Field(max_length=500, description="The report or story behind the rule.")
+            ] = None,
+            references: Annotated[
+                list[TriageNote] | None, Field(max_length=10, description="Links; they are shown defanged.")
+            ] = None,
+        ) -> dict[str, Any]:
+            """Post an alert rule to the alert rule Teams channel: a proposed rule (e.g. from a threat-intel
+            digest), or one that was created, updated, activated or deactivated. Nothing is changed in
+            Logpoint."""
+            details: dict[str, Any] = {
+                "summary": summary, "risk": risk, "condition": condition, "log_source": log_source,
+                "mitre": [m.upper() for m in mitre or []], "validation": validation,
+                "false_positives": false_positives, "source": source, "references": references,
+            }
+            if stage == "proposed":
+                if rule_id:
+                    raise ValueError("A proposed rule doesn't exist in Logpoint yet; omit rule_id, or use the stage "
+                                     "that happened to the rule (created, updated, activated, deactivated).")
+                if not name or not query:
+                    raise ValueError("A proposed rule needs `name` and `query`.")
+                return await teams.post_alert_rule(stage=stage, name=name, query=query, **details)
+
+            if not rule_id:
+                raise ValueError(f"stage={stage} needs the rule_id, so the card shows the rule as Logpoint has it.")
+            if services.alert_rules is None:
+                raise ValueError("Posting an existing rule needs the Alert Rule API (LOGPOINT_JWT_SECRET).")
+            rule = await services.alert_rules.get_rule(rule_id.strip())
+            if services.attack_tags is not None and rule["attack_tag_hashes"]:
+                tags = await services.attack_tags.describe(rule["attack_tag_hashes"])
+                details["mitre"] = [f"{t['technique_id']} {t['technique']} ({t['tactic']})"
+                                    for t in tags if t.get("technique_id")]
+            details.update(rule_id=str(rule["id"]), active=rule["active"], risk=rule.get("risk") or risk,
+                           condition=_rule_condition(rule) or condition,
+                           repos=[str(r).rsplit("/", 1)[-1] for r in rule.get("repos") or []])
+            return await teams.post_alert_rule(stage=stage, name=str(rule.get("name") or rule_id),
+                                               query=str(rule.get("query") or ""), **details)
+
+
+def _rule_condition(rule: dict[str, Any]) -> str | None:
+    """A rule's trigger condition in words, e.g. 'greaterthan 0 in 1h, every 10 min'."""
+    condition = rule.get("condition") or {}
+    if "condition_value" not in condition:
+        return None
+    span = rule.get("time_range") or {}
+    window = "".join(f"{span[k]}{unit}" for k, unit in (("timerange_day", "d"), ("timerange_hour", "h"),
+                                                         ("timerange_minute", "m")) if span.get(k))
+    text = f"{condition.get('condition_option', '')} {condition['condition_value']}".strip()
+    if window:
+        text += f" in {window}"
+    if rule.get("search_interval_minute"):
+        text += f", every {rule['search_interval_minute']} min"
+    return text

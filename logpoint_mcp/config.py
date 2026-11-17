@@ -237,10 +237,15 @@ class TeamsSettings(BaseSettings):
         description="URL of a second workflow that posts the start-of-run message with an @channel mention "
                     "(through Graph, as a user). Optional; it is a secret.",
     )
+    alert_rule_webhook_url: SecretStr | None = Field(
+        default=None,
+        description="URL of a workflow for a separate channel that receives the alert rule cards "
+                    "(proposals and rule changes). Optional; without it they go to webhook_url. It is a secret.",
+    )
     title_prefix: str = "[AI triage]"
     timeout_seconds: float = 30.0
 
-    @field_validator("webhook_url", "announce_webhook_url")
+    @field_validator("webhook_url", "announce_webhook_url", "alert_rule_webhook_url")
     @classmethod
     def require_https(cls, value: SecretStr | None) -> SecretStr | None:
         if value is not None and not value.get_secret_value().lower().startswith("https://"):

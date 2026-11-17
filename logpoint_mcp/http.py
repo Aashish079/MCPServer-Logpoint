@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 from typing import Any
 
 import httpx
@@ -19,6 +20,7 @@ USER_AGENT = f"logpoint-mcp/{__version__}"
 _ALWAYS_RETRY = {429}
 _IDEMPOTENT_RETRY = {502, 503, 504}
 _MAX_BACKOFF_SECONDS = 10.0
+_URL = re.compile(r"\b[a-z][a-z0-9+.-]*://\S+", re.IGNORECASE)
 
 
 def build_client(
@@ -57,16 +59,17 @@ async def request_with_retries(
     """
     attempt = 0
     while True:
+        error: Exception | None = None
         try:
             response = await client.request(method, url, **kwargs)
-        except (httpx.ConnectError, httpx.ConnectTimeout):
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             if attempt >= max_retries:
                 raise
-            response = None
-        except httpx.TransportError:
+            response, error = None, exc
+        except httpx.TransportError as exc:
             if not idempotent or attempt >= max_retries:
                 raise
-            response = None
+            response, error = None, exc
         else:
             retryable = response.status_code in _ALWAYS_RETRY or (
                 idempotent and response.status_code in _IDEMPOTENT_RETRY
@@ -78,10 +81,28 @@ async def request_with_retries(
         delay = _backoff(attempt, response)
         logger.warning(
             "Retrying %s %s (attempt %d/%d) in %.1fs after %s",
-            method, url, attempt, max_retries, delay,
-            f"HTTP {response.status_code}" if response is not None else "a connection error",
+            method, redact_url(url), attempt, max_retries, delay,
+            f"HTTP {response.status_code}" if response is not None else f"a connection error ({describe_error(error)})",
         )
         await asyncio.sleep(delay)
+
+
+def redact_url(url: Any) -> str:
+    """A URL without its query string or fragment, where signed URLs (e.g. Teams webhooks) keep their secret."""
+    return str(url).split("?", 1)[0].split("#", 1)[0]
+
+
+def describe_error(exc: BaseException | None) -> str:
+    """The error and its root cause, e.g. 'ConnectError: [Errno 8] nodename nor servname provided',
+    with any URL removed, since URLs can carry secrets."""
+    if exc is None:
+        return "unknown error"
+    root = exc
+    while root.__cause__ is not None or root.__context__ is not None:
+        root = root.__cause__ or root.__context__  # type: ignore[assignment]
+    detail = _URL.sub("<url>", " ".join(str(root).split()))[:200]
+    name = type(exc).__name__
+    return f"{name}: {detail}" if detail else name
 
 
 def _backoff(attempt: int, response: httpx.Response | None) -> float:

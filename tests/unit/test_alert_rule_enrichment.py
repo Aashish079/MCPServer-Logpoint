@@ -335,3 +335,52 @@ async def test_create_with_ownership(server, store):
     result = await two_step(server, "create_alert_rule", rule=rule, reason="New Kerberoasting detection")
     assert store.rules[result["rule_id"]]["incident_ownership"] == {
         "assignee": "analyst", "visible_to_usergroups": [GROUP_A, GROUP_B]}
+
+
+# --- Teams alert rule cards -------------------------------------------------------------------------
+
+
+async def test_notify_teams_alert_rule(fake, store, rule_settings):
+    from logpoint_mcp.config import TeamsSettings
+
+    settings = rule_settings(allow_write_actions=True)
+    settings.teams = TeamsSettings(webhook_url="https://hook.test/cards")
+    services = Services.from_settings(settings, logpoint_client=fake.client())
+    posted = []
+    await services.teams.aclose()
+    services.teams._client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: posted.append(json.loads(request.content)) or httpx.Response(202)))
+    mcp = create_server(settings, services)
+    assert "notify_teams_alert_rule" in mcp.instructions
+
+    async def post(mcp, **arguments):  # call() takes `name` itself, which this tool also has
+        return (await mcp.call_tool("notify_teams_alert_rule", arguments))[1]
+
+    # A proposal: the agent's own description, nothing read from or written to Logpoint.
+    result = await post(mcp, stage="proposed", summary="Cursor marketplace breach.",
+                        name="IDE spawning shell", query="norm_id=CrowdStrike", risk="high", mitre=["t1059"])
+    assert result["posted"] is True and result["rule_id"] is None
+    assert not [p for p in fake.paths() if p.startswith("AlertRules/")]
+
+    # An existing rule: name, query, risk, condition, repos, tags and state come from Logpoint.
+    store.add("r1", "AI - Kerberoasting", active=False, taxonomy={"attack_tag_hashes": [KERBEROASTING], "metadata": []})
+    store.rules["r1"]["search_params"].update(timerange_hour=1, search_interval_minute=10)
+    result = await post(mcp, stage="created", rule_id="r1", summary="New detection.",
+                        name="Something else", query="ignored", risk="low")
+    assert result == {"posted": True, "stage": "created", "name": "AI - Kerberoasting", "rule_id": "r1"}
+    card = posted[-1]["attachments"][0]["content"]
+    facts = {f["title"]: f["value"] for f in next(b for b in card["body"] if b["type"] == "FactSet")["facts"]}
+    assert facts["Rule"] == "AI - Kerberoasting" and facts["Status"] == "Inactive" and facts["Risk"] == "Low"
+    assert facts["Condition"] == "greaterthan 0 in 1h, every 10 min"
+    assert facts["MITRE ATT&CK"] == "T1558.003 Kerberoasting (Credential Access)"
+    assert next(b for b in card["body"] if b.get("fontType") == "Monospace")["text"] == "norm_id=X"
+    assert not writes(fake)
+
+    with pytest.raises(ToolError, match="needs the rule_id"):
+        await post(mcp, stage="activated", summary="s", name="n", query="q")
+    with pytest.raises(ToolError, match="omit rule_id"):
+        await post(mcp, stage="proposed", summary="s", rule_id="r1")
+    with pytest.raises(ToolError, match="needs `name` and `query`"):
+        await post(mcp, stage="proposed", summary="s", name="n")
+    assert len(posted) == 2
+    await services.aclose()
